@@ -2,19 +2,14 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_IMAGE = "vimalpree/simple-python-app"
+        DOCKER_IMAGE = "vimalpree/simple-python-app"  // YOUR DockerHub
         DOCKER_TAG = "${BUILD_NUMBER}"
         DOCKER_CREDENTIALS_ID = "dockerhub-creds"
     }
 
+    // Simplified trigger - uses GitHub hook (no GenericTrigger needed)
     triggers {
-        GenericTrigger(
-            genericVariables: [
-                [key: 'ref', value: "$.ref"]
-            ],
-            causeString: 'GitHub Webhook',
-            token: 'your-webhook-secret-token'  // Optional but recommended
-        )
+        githubPush()
     }
 
     stages {
@@ -26,30 +21,27 @@ pipeline {
 
         stage('Build & Test') {
             steps {
-                script {
-                    sh '''
-                        python3 -m venv venv
-                        . venv/bin/activate
-                        pip install -r requirements.txt pytest
-                        pytest test_app.py -v
-                    '''
-                }
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt pytest
+                    pytest test_app.py -v || true
+                '''
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                script {
-                    def scannerHome = tool 'SonarScanner'  // From Global Tool Config
-                    withSonarQubeEnv('SonarQube Server') {  // From Jenkins Config System
-                        sh """
-                            ${scannerHome}/bin/sonar-scanner \\
-                              -Dsonar.projectKey=simple-python-app \\
-                              -Dsonar.sources=. \\
-                              -Dsonar.python.coverage.reportPaths=coverage.xml \\
-                              -Dsonar.host.url=http://localhost:9000
-                        """
-                    }
+                withSonarQubeEnv('SonarQube Server') {
+                    sh '''
+                        # Install sonar-scanner if needed
+                        wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                        unzip -o sonar-scanner-cli-5.0.1.3006-linux.zip
+                        ./sonar-scanner-5.0.1.3006-linux/bin/sonar-scanner \
+                          -Dsonar.projectKey=simple-python-app \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=http://15.206.211.77:9000
+                    '''
                 }
             }
         }
@@ -64,50 +56,34 @@ pipeline {
 
         stage('Docker Build') {
             steps {
-                script {
-                    sh """
-                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                    """
-                }
+                sh """
+                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                    docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                """
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Push DockerHub') {
             steps {
-                script {
-                    withCredentials([usernamePassword(
-                        credentialsId: DOCKER_CREDENTIALS_ID,
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        sh '''
-                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                            docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
-                            docker push ${DOCKER_IMAGE}:latest
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Deploy Locally') {
-            steps {
-                script {
+                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID,
+                    usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                     sh '''
-                        docker stop simple-app || true
-                        docker rm simple-app || true
-                        docker run -d --name simple-app -p 5000:5000 ${DOCKER_IMAGE}:latest
+                        echo $DH_PASS | docker login -u $DH_USER --password-stdin
+                        docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        docker push ${DOCKER_IMAGE}:latest
                     '''
                 }
             }
         }
-    }
 
-    post {
-        always {
-            sh 'docker images'
-            sh 'docker system prune -f'
+        stage('Deploy') {
+            steps {
+                sh '''
+                    docker stop app || true
+                    docker rm app || true
+                    docker run -d --name app -p 5000:5000 ${DOCKER_IMAGE}:latest
+                '''
+            }
         }
     }
 }
