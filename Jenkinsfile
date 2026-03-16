@@ -1,43 +1,31 @@
 pipeline {
     agent any
-
     environment {
-        DOCKER_IMAGE = "vimalpree/simple-python-app"  // YOUR DockerHub
+        DOCKER_IMAGE = "vimalpree/simple-python-app"
         DOCKER_TAG = "${BUILD_NUMBER}"
-        DOCKER_CREDENTIALS_ID = "dockerhub-creds"
     }
-
-    // Simplified trigger - uses GitHub hook (no GenericTrigger needed)
-    triggers {
-        githubPush()
-    }
-
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Build & Test') {
+        stage('Install Python & Test') {
             steps {
                 sh '''
+                    apt-get update
+                    apt-get install -y python3 python3-pip python3-venv
+                    ln -s /usr/bin/python3 /usr/bin/python
                     python3 -m venv venv
                     . venv/bin/activate
+                    pip install --upgrade pip
                     pip install -r requirements.txt pytest
-                    pytest test_app.py -v || true
+                    pytest test_app.py -v
                 '''
             }
         }
-
-        stage('SonarQube Analysis') {
+        stage('SonarQube') {
             steps {
                 withSonarQubeEnv('SonarQube Server') {
                     sh '''
-                        # Install sonar-scanner if needed
-                        wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                        unzip -o sonar-scanner-cli-5.0.1.3006-linux.zip
-                        ./sonar-scanner-5.0.1.3006-linux/bin/sonar-scanner \
+                        curl -sL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip -o /tmp/sonar.zip
+                        cd /tmp && unzip -o sonar.zip
+                        /tmp/sonar-scanner-5.0.1.3006-linux/bin/sonar-scanner \
                           -Dsonar.projectKey=simple-python-app \
                           -Dsonar.sources=. \
                           -Dsonar.host.url=http://15.206.211.77:9000
@@ -45,29 +33,16 @@ pipeline {
                 }
             }
         }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
+        stage('Quality Gate') { 
+            steps { timeout(time: 3, unit: 'MINUTES') { waitForQualityGate abortPipeline: true } }
         }
-
-        stage('Docker Build') {
+        stage('Docker Build & Push') {
             steps {
-                sh """
-                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                    docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                """
-            }
-        }
-
-        stage('Push DockerHub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID,
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', 
                     usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                     sh '''
+                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
                         echo $DH_PASS | docker login -u $DH_USER --password-stdin
                         docker push ${DOCKER_IMAGE}:${DOCKER_TAG}
                         docker push ${DOCKER_IMAGE}:latest
@@ -75,7 +50,6 @@ pipeline {
                 }
             }
         }
-
         stage('Deploy') {
             steps {
                 sh '''
@@ -87,3 +61,4 @@ pipeline {
         }
     }
 }
+
