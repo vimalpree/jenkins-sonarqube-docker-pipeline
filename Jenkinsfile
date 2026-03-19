@@ -1,34 +1,100 @@
 pipeline {
     agent any
+
+    environment {
+        DOCKERHUB_REPO   = "vimalpree/simple-ci-app"
+        SONAR_PROJECTKEY = "simple-ci-app"
+    }
+
+    triggers {
+        githubPush()
+    }
+
+    tools {
+        // uses the configured SonarQube Scanner
+        // if using 'withSonarQubeEnv', tool is auto-selected
+    }
+
     stages {
-        stage('Test') {
+        stage('Checkout') {
             steps {
-                sh 'echo "Tests passed (simplified)"'
+                checkout scm
             }
         }
-        stage('SonarQube') {
+
+        stage('Validate') {
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'TOKEN')]) {
-                    sh '''
-                        curl -s https://sonar-scanner-cli.s3.us-east-1.amazonaws.com/sonar-scanner-cli-4.8.0.2856-linux.zip -o /tmp/sonar.zip
-                        cd /tmp && unzip sonar.zip
-                        /tmp/sonar-scanner-4.8.0.2856-linux/bin/sonar-scanner -Dsonar.projectKey=simple-python-app -Dsonar.sources=. -Dsonar.host.url=http://15.206.211.77:9000 -Dsonar.token=$TOKEN
-                    '''
+                sh 'chmod +x test_app.sh'
+                sh './test_app.sh'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            environment {
+                // name must match Sonar server configuration
+            }
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh """
+                        sonar-scanner \
+                          -Dsonar.projectKey=${SONAR_PROJECTKEY} \
+                          -Dsonar.sources=. \
+                          -Dsonar.host.url=${SONAR_HOST_URL} \
+                          -Dsonar.login=${SONAR_AUTH_TOKEN}
+                    """
                 }
             }
         }
-        stage('Quality Gate') { steps { timeout(time: 2, unit: 'MINUTES') { waitForQualityGate abortPipeline: true } } }
-        stage('DockerHub') {
+
+        stage('Quality Gate') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh '''
-                        docker build -t vimalpree/simple-python-app:$BUILD_NUMBER .
-                        echo $PASS | docker login -u $USER --password-stdin
-                        docker push vimalpree/simple-python-app:$BUILD_NUMBER
-                    '''
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
-        stage('Deploy') { sh 'docker run -d --name app -p 5000:5000 vimalpree/simple-python-app:$BUILD_NUMBER' }
+
+        stage('Docker Build') {
+            steps {
+                script {
+                    def imageTag = "${env.BUILD_NUMBER}"
+                    sh "docker build -t ${DOCKERHUB_REPO}:${imageTag} ."
+                    sh "docker tag ${DOCKERHUB_REPO}:${imageTag} ${DOCKERHUB_REPO}:latest"
+                }
+            }
+        }
+
+        stage('Docker Login & Push') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                                     usernameVariable: 'DOCKER_USER',
+                                                     passwordVariable: 'DOCKER_PASS')]) {
+                        sh """
+                          echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin
+                          docker push ${DOCKERHUB_REPO}:${BUILD_NUMBER}
+                          docker push ${DOCKERHUB_REPO}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy (Local Docker)') {
+            steps {
+                script {
+                    sh """
+                      docker rm -f simple-ci-app || true
+                      docker run -d --name simple-ci-app -p 3000:3000 ${DOCKERHUB_REPO}:latest
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh "docker image prune -f || true"
+        }
     }
 }
