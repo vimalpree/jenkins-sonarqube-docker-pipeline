@@ -11,4 +11,3 @@ COPY --from=builder /install /usr/local
 COPY app.py .
 EXPOSE 3000
 CMD ["python", "app.py"]
-EOF
